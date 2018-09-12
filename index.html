@@ -1,0 +1,719 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="ie=edge">
+    <title>Spotify song visualizer</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+        }
+    </style>
+</head>
+<body>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/96/three.js"></script>
+    <script src="http://localhost:8082/postprocessing/EffectComposer.js"></script>
+    <script src="http://localhost:8082/postprocessing/ShaderPass.js"></script>
+    <script src="http://localhost:8082/postprocessing/RenderPass.js"></script>
+    <script src="http://localhost:8082/postprocessing/MaskPass.js"></script>
+    <script src="http://localhost:8082/postprocessing/DotScreenPass.js"></script>
+    <script src="http://localhost:8082/shaders/CopyShader.js"></script>
+    <script src="http://localhost:8082/shaders/DotScreenShader.js"></script>
+    <script src="http://localhost:8082/shaders/ConvolutionShader.js"></script>
+    <script src="http://localhost:8082/shaders/HorizontalBlurShader.js"></script>
+    <script src="http://localhost:8082/shaders/ColorifyShader.js"></script>
+    <script src="http://localhost:8082/shaders/MirrorShader.js"></script>
+    <script src="http://localhost:8082/shaders/RGBShiftShader.js"></script>
+    <script src="http://localhost:8082/shaders/DigitalGlitch.js"></script>
+    <script src="http://localhost:8082/postprocessing/GlitchPass.js"></script>
+
+    <script src="spotify_developer.js"></script>
+    <script>
+
+        const sketchParams = {
+            volSens: 1.0,
+            cubeSpeed: 2.0
+        };
+        var BEAM_ROT_SPEED = 0.003;
+
+        var timeCount = 0;
+
+        var beatCutOff = 20;
+        var beatTime = 30; //avoid auto beat at start
+
+        var source;
+        var BEAT_HOLD_TIME = 60; //num of frames to hold a beat
+        var BEAT_DECAY_RATE = 0.97;
+        var BEAT_MIN = 0.6; //level less than this is no beat
+        var buffer;
+        var audioBuffer;
+        var dropArea;
+        var audioContext;
+        //var processor;
+        var analyser;
+        var freqByteData;
+        var levels;
+        var isPlayingAudio = false;
+        var normLevel = 0;
+
+        function loadSampleAudio() {
+            source = audioContext.createBufferSource();
+            analyser = audioContext.createAnalyser();
+            analyser.fftSize = 1024;
+
+            // Connect audio processing graph
+            source.connect(analyser);
+            analyser.connect(audioContext.destination);
+            loadAudioBuffer("mp3/Szerencsetlen_edit03.mp3");
+        }
+
+        function loadAudioBuffer(url) {
+        // Load asynchronously
+            var request = new XMLHttpRequest();
+            request.open("GET", url, true);
+            request.responseType = "arraybuffer";
+            request.onload = function() {
+                audioContext.decodeAudioData(request.response, function(buffer) {
+                        audioBuffer = buffer;
+                        finishLoad();
+                }, function(e) {
+                    console.log(e);
+                });
+            };
+            request.send();
+        }
+
+        function seq2(){
+            console.log("seq2");
+            sketchParams.volSens = 1.5;
+        }
+
+        function glitchOn(){
+            glitchPass.enabled = true;
+        }
+
+        function glitchOff(){
+            glitchPass.enabled = false;
+        }
+
+        function glitchWildOn(){
+            glitchPass.goWild = true;
+        }
+
+        function glitchWildOff(){
+            glitchPass.goWild = false;
+        }
+
+        // function getAudioTime(){
+
+        // 	//console.log(source.currentTime);
+        // 	return source.currentTime;
+        // }
+        function startViz(){
+            freqByteData = new Uint8Array(analyser.frequencyBinCount);
+            levels = [];
+            isPlayingAudio = true;
+
+            //rudimentary sequnce
+            setTimeout(seq2, 34500);
+
+            // setTimeout(glitchOn,  47212);
+            // setTimeout(glitchOff, 48212);
+
+            // setTimeout(glitchOn,  52250);
+            // setTimeout(glitchOff, 53250);
+
+            // setTimeout(glitchOn,  121453);
+            // setTimeout(glitchOff, 123453);
+
+            // setTimeout(glitchWildOn, 128751);
+            // setTimeout(glitchWildOff, 132751);
+
+
+        }
+
+        function finishLoad() {
+            source.buffer = audioBuffer;
+            source.loop = true;
+            source.start(0.0);
+            startViz();
+        }
+
+        /**
+        * Box Class handles movement of boxes
+        */
+        function Box() {
+            this.posn = new THREE.Vector3();
+            this.rotation = new THREE.Vector3();
+            this.speed = getRand(3, 20);
+            this.init();
+        }
+
+        Box.ORIGIN = new THREE.Vector3();
+        Box.MAX_DISTANCE = 1000;
+        Box.INIT_POSN_RANGE = 500;
+        Box.FRONT_PLANE_Z = 1000;
+        Box.BACK_PLANE_Z = -1000;
+
+        Box.prototype.init = function() {
+            this.posn.copy(Box.ORIGIN);
+            this.posn.x = getRand(-Box.INIT_POSN_RANGE,Box.INIT_POSN_RANGE);
+            this.posn.y = getRand(-Box.INIT_POSN_RANGE,Box.INIT_POSN_RANGE);
+            this.posn.z = Box.BACK_PLANE_Z;
+            this.rotation.x = (Math.random() * 360 ) * Math.PI / 180;
+            this.rotation.y = (Math.random() * 360 ) * Math.PI / 180;
+            this.rotation.z = (Math.random() * 360 ) * Math.PI / 180;
+        };
+
+        Box.prototype.update = function() {
+            this.posn.z += this.speed * sketchParams.cubeSpeed ;
+
+
+            this.rotation.x += 0.03;
+            this.rotation.y += 0.01;
+
+            if(this.posn.z > Box.FRONT_PLANE_Z) {
+                this.init();
+            }
+        };
+
+        //returns random number within a range
+        function getRand(minVal, maxVal) {
+            return minVal + (Math.random() * (maxVal - minVal));
+        }
+    </script>
+    <script>
+        //Pareidolia (c) by @felixturner / www.airtight.cc
+//using three.js v55
+//audio reactive cubes
+//light intensity linked to audio level
+//postprocessing via mirror , dotscreen shader + rgb shift shaders
+/**
+ * @author alteredq / http://alteredqualia.com/
+ * @author mr.doob / http://mrdoob.com/
+ */
+
+var Detector = {
+
+canvas: !! window.CanvasRenderingContext2D,
+webgl: ( function () { try { return !! window.WebGLRenderingContext && !! document.createElement( 'canvas' ).getContext( 'experimental-webgl' ); } catch( e ) { return false; } } )(),
+workers: !! window.Worker,
+fileapi: window.File && window.FileReader && window.FileList && window.Blob,
+
+getWebGLErrorMessage: function () {
+
+    var element = document.createElement( 'div' );
+    element.id = 'webgl-error-message';
+    element.style.fontFamily = 'monospace';
+    element.style.fontSize = '13px';
+    element.style.fontWeight = 'normal';
+    element.style.textAlign = 'center';
+    element.style.background = '#fff';
+    element.style.color = '#000';
+    element.style.padding = '1.5em';
+    element.style.width = '400px';
+    element.style.margin = '5em auto 0';
+
+    if ( ! this.webgl ) {
+
+        element.innerHTML = window.WebGLRenderingContext ? [
+            'Your graphics card does not seem to support <a href="http://khronos.org/webgl/wiki/Getting_a_WebGL_Implementation" style="color:#000">WebGL</a>.<br />',
+            'Find out how to get it <a href="http://get.webgl.org/" style="color:#000">here</a>.'
+        ].join( '\n' ) : [
+            'Your browser does not seem to support <a href="http://khronos.org/webgl/wiki/Getting_a_WebGL_Implementation" style="color:#000">WebGL</a>.<br/>',
+            'Find out how to get it <a href="http://get.webgl.org/" style="color:#000">here</a>.'
+        ].join( '\n' );
+
+    }
+
+    return element;
+
+},
+
+addGetWebGLMessage: function ( parameters ) {
+
+    var parent, id, element;
+
+    parameters = parameters || {};
+
+    parent = parameters.parent !== undefined ? parameters.parent : document.body;
+    id = parameters.id !== undefined ? parameters.id : 'oldie';
+
+    element = Detector.getWebGLErrorMessage();
+    element.id = id;
+
+    parent.appendChild( element );
+
+}
+
+};
+if(!Detector.webgl)
+	Detector.addGetWebGLMessage();
+
+var BOX_COUNT = 100;
+var BEAM_ROT_SPEED = 0.003;
+var TILT_SPEED = 0.1;
+var TILT_AMOUNT = 0.5;
+var BEAT_HOLD_TIME = 60; //num of frames to hold a beat
+var BEAT_DECAY_RATE = 0.97;
+var BEAT_MIN = 0.6; //level less than this is no beat
+
+var container, stats;
+var camera, scene, renderer;
+
+var imgTextureStars, imgTextureStripes, imgTextureStripes;
+
+var composer;
+var rgbPass;
+var colorifyPass;
+
+var mouseX = 0, mouseY = 0;
+var windowHalfX, windowHalfY;
+
+var boxes = [];
+var cubeHolder;
+var backMesh;
+var backMesh2;
+var light1;
+var light2;
+var timeCount = 0;
+
+var beatCutOff = 20;
+var beatTime = 30; //avoid auto beat at start
+
+var doStrobe = false;
+var doShake = false;
+var strobeOn = false;
+
+var introPanel;
+var infoPanel;
+var promptPanel;
+var tagPanel;
+var tagButton;
+var optionMic;
+var optionSample;
+
+
+init();
+
+
+function init() {
+
+	//DOCUMENT
+	container = document.createElement('div');
+	document.body.appendChild(container);
+	document.onselectstart = function() {
+		return false;
+	};
+	window.addEventListener('resize', onResize, false);
+	
+	//DAT.GUI
+	const sketchParams = {
+		volSens: 1.0,
+		cubeSpeed: 2.0
+	};
+
+	
+	// gui.add(sketchParams, 'volSens', 0.1, 10).listen().step(0.1);
+	// gui.add(sketchParams, 'cubeSpeed', -2, 4).step(0.1);
+
+	//STATS
+	// stats = new Stats();
+	// document.querySelector('#fps').appendChild(stats.domElement);
+
+	//RENDERER
+	renderer = new THREE.WebGLRenderer();
+	renderer.setSize(window.innerWidth, window.innerHeight);
+	renderer.setClearColor ( 0x000000 );
+	container.appendChild(renderer.domElement);
+
+	//3D SCENE
+	camera = new THREE.PerspectiveCamera(55,window.innerWidth/ window.innerHeight, 1, 3000);
+	camera.position.z = 1200;
+	scene = new THREE.Scene();
+	scene.add(camera);
+
+	//BKGND PLANE
+	imgTextureStars = THREE.ImageUtils.loadTexture( "images/stars.jpg" );
+	backMaterial = new THREE.MeshBasicMaterial( {
+		map:imgTextureStars
+	} );
+
+	backMesh = new THREE.Mesh( new THREE.SphereGeometry( 2000, 30, 20 ), backMaterial  );
+	backMesh.scale.x = -1;
+	scene.add( backMesh );
+
+	imgTextureStripes2 = THREE.ImageUtils.loadTexture( "images/stripes2.jpg" );
+	imgTextureStripes2.wrapS = imgTextureStripes2.wrapT = THREE.RepeatWrapping;
+	imgTextureStripes2.repeat.set( 10, 10 );
+	backMaterial2 = new THREE.MeshBasicMaterial( {
+		map:imgTextureStripes2
+	} );
+
+	backMesh2 = new THREE.Mesh( new THREE.SphereGeometry( 1900, 30, 20 ), backMaterial2  );
+	backMesh2.scale.x = -1;
+	scene.add( backMesh2 );
+	backMesh2.visible = false;
+
+	//LIGHTS
+	//orig light
+	light1 = new THREE.PointLight( 0xFFFFFF, 3, 200 );
+	scene.add( light1 );
+
+	//front light
+	light2 = new THREE.PointLight( 0xFFFFFF, 1, 1000 );
+	scene.add( light2 );
+	light2.position.z = 1000;
+
+	//SUN BEAMS
+	BEAM_COUNT = 6;
+	var i;
+	var beamGeometry = new THREE.PlaneGeometry(5000, 50, 1, 1);
+	beamGroup = new THREE.Object3D();
+	beamMaterial = new THREE.MeshBasicMaterial({
+		opacity: 0.3,
+		transparent: true
+	});
+
+	for (i = 0; i < BEAM_COUNT; ++i) {
+		beam = new THREE.Mesh(beamGeometry, beamMaterial);
+		beam.doubleSided = true;
+		beam.rotation.x = Math.random() * Math.PI;
+		beam.rotation.y = Math.random() * Math.PI;
+		beam.rotation.z = Math.random() * Math.PI;
+		beamGroup.add(beam);
+	}
+	scene.add(beamGroup);
+
+	//CUBES
+	var cubesize = 100;
+	var geometry = new THREE.CubeGeometry(cubesize, cubesize, cubesize);
+	cubeHolder = new THREE.Object3D();
+	imgTextureStripes = THREE.ImageUtils.loadTexture( "images/stripes.jpg" );
+	cubeMaterial  = new THREE.MeshPhongMaterial( {
+		ambient: 0x111111,
+		color: 0x666666,
+		specular: 0x999999,
+		shininess: 30,
+		shading: THREE.FlatShading ,
+		map:imgTextureStripes
+	});
+	for(i = 0; i < BOX_COUNT; i++) {
+		var box = new Box();
+		boxes.push(box);
+		var cube = new THREE.Mesh(geometry,cubeMaterial );
+		cube.position = box.posn;
+		cube.rotation = box.rotation;
+		cube.ox = cube.scale.x = Math.random() * 1 + 1;
+		cube.oy = cube.scale.y = Math.random() * 1 + 1;
+		cube.oz = cube.scale.z = Math.random() * 1 + 1;
+		cubeHolder.add(cube);
+	}
+	scene.add(cubeHolder);
+
+	//POST PROCESSING
+	composer = new THREE.EffectComposer( renderer);
+	//Create Shader Passes
+	var renderPass = new THREE.RenderPass( scene, camera );
+	var dotScreenPass = new THREE.DotScreenPass( new THREE.Vector2( 0, 0 ), 0.5, 0.8 );
+	rgbPass = new THREE.ShaderPass( THREE.RGBShiftShader );
+	rgbPass.uniforms[ "amount" ].value = 0.005;
+	var mirrorPass = new THREE.ShaderPass( THREE.MirrorShader );
+	var hblurPass = new THREE.ShaderPass( THREE.HorizontalBlurShader );
+	hblurPass.uniforms[ 'h' ].value =  1.0 / (512.0*2) ;
+
+	glitchPass = new THREE.GlitchPass(32);
+	glitchPass.enabled = false;
+	//glitchPass.goWild=true;
+
+	//Add Shader Passes to Composer
+	composer.addPass( renderPass );
+	composer.addPass( hblurPass );
+	composer.addPass( dotScreenPass );
+	composer.addPass( mirrorPass );
+	composer.addPass( glitchPass );
+	composer.addPass( rgbPass );
+	rgbPass.renderToScreen = true;
+
+	//Get an Audio Context
+	try {
+		window.AudioContext = window.AudioContext || window.webkitAudioContext;
+		audioContext = new window.AudioContext();
+	} catch(e) {
+		//Web Audio API is not supported in this browser
+		alert("Sorry! This browser does not support the Web Audio API. Please use Chrome, Safari or Firefox.");
+	}
+
+	//SequenceHandler.init();
+
+
+	//setTimeout(MidiHandler.init,1000);
+		
+
+	onResize();
+
+    //lastTime = performance.now();
+    loadSampleAudio();
+	animate();
+
+}
+
+function animate() {
+	requestAnimationFrame(animate);
+	render();
+	// stats.update();
+	//lastTime = time;
+
+	//SequenceHandler.update();
+
+
+	//console.log(getAudioTime());
+}
+
+function render() {
+
+	//time = performance.now();
+	//delta = ( time - lastTime );
+
+	if (!isPlayingAudio) return;
+
+	timeCount ++;
+
+	beamGroup.rotation.x += BEAM_ROT_SPEED;
+	beamGroup.rotation.y += BEAM_ROT_SPEED;
+
+	rgbPass.uniforms[ "angle" ].value = Math.sin(timeCount/100)*Math.PI;
+	rgbPass.uniforms[ "amount" ].value = normLevel*0.01	;
+
+	updateAudio();
+
+	for(var i = 0; i < BOX_COUNT; i++) {
+		boxes[i].update();
+	}
+
+	light1.intensity = normLevel * 400;
+	light1.distance = normLevel * 1000;
+
+	beamMaterial.opacity = Math.min(normLevel *0.4,0.6);
+
+	if (doShake){
+		var maxshake = 60;
+		var shake = normLevel * maxshake ;
+		camera.position.x = Math.random()*shake - shake/2;
+		camera.position.y = Math.random()*shake - shake/2;
+	}
+
+	camera.rotation.z += 0.003;
+	//camera.rotation.z += 0.03;
+
+	if (doStrobe){
+		strobeOn = !strobeOn;
+		if (strobeOn){
+			light2.intensity = 2;
+		}else{
+			light2.intensity = 0.5;
+		}
+	}else{
+		light2.intensity = 0.2;
+	}
+
+	//flash background  on level threshold
+	if (normLevel > 0.5 ){
+		renderer.setClearColor ( 0xFFFFFF );
+		backMesh.visible = true;
+	}else{
+		renderer.setClearColor ( 0x000000 );
+		backMesh.visible = false;
+	}
+
+	//show stripes for 6 frames on beat
+	backMesh2.visible = beatTime < 6;
+
+	composer.render( 0.1);
+}
+
+function updateAudio(){
+
+	if (!isPlayingAudio)return;
+	analyser.getByteFrequencyData(freqByteData);
+
+	var length = freqByteData.length;
+
+	//GET AVG LEVEL
+	var sum = 0;
+	for(var j = 0; j < length; ++j) {
+		sum += freqByteData[j];
+	}
+
+	// Calculate the average frequency of the samples in the bin
+	var aveLevel = sum / length;
+
+	normLevel = (aveLevel / 256) * sketchParams.volSens; //256 is the highest a freq data can be
+
+	//BEAT DETECTION
+	if (normLevel  > beatCutOff && normLevel > BEAT_MIN){
+		beatCutOff = normLevel *1.1;
+		beatTime = 0;
+	}else{
+		if (beatTime < BEAT_HOLD_TIME){
+			beatTime ++;
+		}else{
+			beatCutOff *= BEAT_DECAY_RATE;
+		}
+	}
+}
+
+function doEffect(){
+
+	if (!isPlayingAudio) return;
+
+	if (mouseDown) return;
+
+	mouseDown = true;
+
+	var r = Math.random();
+	if (r <0.5){
+		doStrobe=true;
+	}else {
+		doShake=true;
+	}
+}
+
+function stopEffect(){
+	mouseDown = false;
+	doStrobe=false;
+	doShake=false;
+}
+
+function onDocumentMouseDown(event) {
+	doEffect();
+}
+
+function onDocumentMouseUp(event) {
+	stopEffect();
+}
+
+function onDocumentMouseMove(event) {
+	mouseX = (event.clientX - windowHalfX) / (windowHalfX);
+	mouseY = (event.clientY - windowHalfY) / (windowHalfY);
+}
+
+function selectOptionMic(){
+	introPanel.style.display = 'none';
+	promptPanel.style.display = 'inline';
+	promptPanel.innerHTML = '<h1>Allow microphone access up top.</h1>';
+	//get mic in
+	getMicInput();
+	sketchParams.volSens = 4;
+}
+
+function selectOptionSample(){
+	introPanel.style.display = 'none';
+	//load MP3
+	loadSampleAudio();
+	//sketchParams.volSens = 1.5;
+	sketchParams.volSens = 2.5;
+}
+
+function clickTag(){
+	//show info panel
+	if (infoPanel.style.display == 'inline'){
+		infoPanel.style.display = 'none';
+		tagButton.innerHTML = 'Pareidolia +';
+	}else{
+		infoPanel.style.display = 'inline';
+		tagButton.innerHTML = 'Pareidolia -';
+	}
+}
+
+function showTag(){
+	//tagPanel.style.display = 'inline';
+}
+
+function onResize() {
+
+	renderer.setSize(window.innerWidth, window.innerHeight);
+	camera.aspect = window.innerWidth / window.innerHeight;
+
+	camera.updateProjectionMatrix();
+	windowHalfX = window.innerWidth / 2;
+	windowHalfY = window.innerHeight / 2;
+}
+
+function onMidiControl(data){
+
+		switch(data.id){
+
+		// case 11:
+		// 	fxParams.brightness = data.val;
+		// 	break;
+
+		case 12:
+			glitchPass.enabled = data.val == 1;
+			break;
+
+		//case 13:
+		//	fxParams.audioLevels = data.val == 1;
+	//		toggleShaders();
+	//		break;
+		
+		// case 14:
+		// 	fxParams.strobePeriod = ATUtil.lerp(data.val,120,2);
+		// 	break;
+
+		// case 21:
+		// 	fxParams.tiltAmount = data.val;
+		// 	break;
+
+		// case 24:
+		// 	fxParams.tiltSpeed = data.val/2;
+		// 	break;
+
+
+		// case 42:
+		// 	fxParams.mirror = data.val == 1;
+		// 	toggleShaders();
+		// 	break;
+
+		// // case 42:
+		// // 	fxParams.brightnessContrast = data.val == 1;
+		// // 	toggleShaders();
+		// // 	break;
+
+		// // case 41:
+		// // 	fxParams.contrast = data.val;
+		// // 	break;
+
+		// case 31:
+		// 	fxParams.saturation = data.val;
+		// 	break;
+
+		// case 32:
+		// 	fxParams.colorify = data.val == 1;
+		// 	toggleShaders();
+		// 	break;
+
+		// case 33:
+		// 	fxParams.hueSaturation = data.val == 1;
+		// 	toggleShaders();
+		// 	break;
+
+		// case 34:
+		// 	fxParams.hueSpeed = ATUtil.lerp(data.val,0,10);
+		// 	break;
+
+		
+
+		
+		}
+
+		//setShaderParams();
+
+
+
+	}
+    </script>
+</body>
+</html>
